@@ -1,0 +1,28 @@
+{
+  "name": "job-bot",
+  "version": "1.0.0",
+  "description": "CLI en Node.js para obtener, guardar y gestionar ofertas de empleo desde LinkedIn.",
+  "type": "module",
+  "main": "index.js",
+  "bin": {
+    "job-bot": "./index.js"
+  },
+  "scripts": {
+    "start": "node index.js"
+  },
+  "keywords": [
+    "cli",
+    "jobs",
+    "linkedin",
+    "playwright",
+    "sqlite"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "chalk": "^5.4.1",
+    "commander": "^14.0.0",
+    "dotenv": "^17.2.3",
+    "playwright": "^1.55.0",
+    "sqlite3": "^5.1.7"
+  }
+}

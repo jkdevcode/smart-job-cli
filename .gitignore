@@ -1,0 +1,10 @@
+# Ignore node modules and database files
+node_modules/
+data/jobs.db
+
+# Environment variables file
+.env
+
+# Playwright test artifacts
+playwright-report/
+test-results/
