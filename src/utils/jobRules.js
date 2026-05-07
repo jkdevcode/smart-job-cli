@@ -38,7 +38,21 @@ export function parseJobSearchRules(content) {
 
   return {
     positiveKeywords: extractKeywordList(content, 'positive_keywords'),
-    negativeKeywords: extractKeywordList(content, 'negative_keywords')
+    negativeKeywords: extractKeywordList(content, 'negative_keywords'),
+    searchKeywordVariants: extractKeywordList(content, 'search_keyword_variants'),
+    targetLocations: extractKeywordList(content, 'target_locations'),
+    colombiaCities: extractKeywordList(content, 'colombia_cities'),
+    requiredSpanishLocations: extractKeywordList(content, 'required_spanish_locations'),
+    preferredSpanishLocations: extractKeywordList(content, 'preferred_spanish_locations'),
+    strictEnglishRejectionLocations: extractKeywordList(
+      content,
+      'strict_english_rejection_locations'
+    ),
+    allowMixedLanguageLocations: extractKeywordList(content, 'allow_mixed_language_locations'),
+    englishRequiredPhrases: extractKeywordList(content, 'english_required_phrases'),
+    englishPreferredPhrases: extractKeywordList(content, 'english_preferred_phrases'),
+    spanishMarkers: extractKeywordList(content, 'spanish_markers'),
+    englishMarkers: extractKeywordList(content, 'english_markers')
   };
 }
 
@@ -74,6 +88,17 @@ function normalizeKeyword(value) {
 function createEmptyRules() {
   return {
     positiveKeywords: [],
-    negativeKeywords: []
+    negativeKeywords: [],
+    searchKeywordVariants: [],
+    targetLocations: [],
+    colombiaCities: [],
+    requiredSpanishLocations: [],
+    preferredSpanishLocations: [],
+    strictEnglishRejectionLocations: [],
+    allowMixedLanguageLocations: [],
+    englishRequiredPhrases: [],
+    englishPreferredPhrases: [],
+    spanishMarkers: [],
+    englishMarkers: []
   };
 }

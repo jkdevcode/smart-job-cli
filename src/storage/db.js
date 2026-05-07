@@ -42,7 +42,12 @@ export async function initDB() {
       title TEXT,
       company TEXT,
       link TEXT UNIQUE,
+      location TEXT,
       modality TEXT DEFAULT 'unknown',
+      language TEXT DEFAULT 'unknown',
+      languageConfidence REAL DEFAULT 0,
+      englishRequirement TEXT DEFAULT 'unknown',
+      languageEvidence TEXT,
       status TEXT DEFAULT 'new',
       createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
     )
@@ -52,6 +57,26 @@ export async function initDB() {
 
   if (!columns.some((column) => column.name === 'modality')) {
     await run("ALTER TABLE jobs ADD COLUMN modality TEXT DEFAULT 'unknown'");
+  }
+
+  if (!columns.some((column) => column.name === 'location')) {
+    await run('ALTER TABLE jobs ADD COLUMN location TEXT');
+  }
+
+  if (!columns.some((column) => column.name === 'language')) {
+    await run("ALTER TABLE jobs ADD COLUMN language TEXT DEFAULT 'unknown'");
+  }
+
+  if (!columns.some((column) => column.name === 'languageConfidence')) {
+    await run('ALTER TABLE jobs ADD COLUMN languageConfidence REAL DEFAULT 0');
+  }
+
+  if (!columns.some((column) => column.name === 'englishRequirement')) {
+    await run("ALTER TABLE jobs ADD COLUMN englishRequirement TEXT DEFAULT 'unknown'");
+  }
+
+  if (!columns.some((column) => column.name === 'languageEvidence')) {
+    await run('ALTER TABLE jobs ADD COLUMN languageEvidence TEXT');
   }
 
   return dbInstance;

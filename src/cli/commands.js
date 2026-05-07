@@ -21,9 +21,11 @@ const TABLE_COLUMNS = [
   { key: 'relevance', label: 'Rel', width: 3 },
   { key: 'id', label: 'ID', width: 4 },
   { key: 'modality', label: 'Modo', width: 7 },
-  { key: 'title', label: 'Titulo', width: 42 },
-  { key: 'company', label: 'Empresa', width: 28 },
-  { key: 'link', label: 'Link', width: 48 }
+  { key: 'language', label: 'Lang', width: 5 },
+  { key: 'location', label: 'Ubicacion', width: 20 },
+  { key: 'title', label: 'Titulo', width: 32 },
+  { key: 'company', label: 'Empresa', width: 22 },
+  { key: 'link', label: 'Link', width: 40 }
 ];
 
 const VALID_STATUS_LABEL = JOB_STATUSES.join('|');
@@ -42,30 +44,33 @@ export function createProgram() {
     .command('fetch')
     .description('Obtiene ofertas desde LinkedIn y las guarda en SQLite.')
     .option('--keyword <keyword>', 'Keyword de busqueda para LinkedIn Jobs')
-    .option('--limit <number>', 'Cantidad maxima de ofertas a revisar', parseLimitOption, 50)
+    .option('--limit <number>', 'Cantidad maxima total de ofertas a revisar', parseLimitOption)
     .option(
       '--modality <modality>',
       `Modalidad a buscar: ${SEARCH_MODALITIES.join('|')}`,
-      parseModalityOption,
-      'both'
+      parseModalityOption
     )
+    .option('--location <location>', 'Ubicacion objetivo para LinkedIn Jobs')
     .option('--remote', 'Atajo para buscar solo ofertas remotas')
     .action(async (options) => {
       try {
         printSection('FETCH');
-        const keyword = resolveFetchKeyword(options.keyword);
-        const limit = options.limit;
-        const modality = normalizeSearchModality(options.modality, options.remote);
+        const keyword = resolveFetchKeywordLabel(options.keyword);
+        const limit = resolveFetchLimit(options.limit);
+        const modality = resolveFetchModality(options.modality, options.remote);
+        const location = resolveFetchLocation(options.location);
 
         console.log(chalk.cyan(`Keyword: ${keyword}`));
         console.log(chalk.cyan(`Limite: ${limit}`));
         console.log(chalk.cyan(`Modalidad buscada: ${modality}`));
+        console.log(chalk.cyan(`Ubicacion objetivo: ${location}`));
         console.log(chalk.cyan('Publicadas en ultimas 24 horas: si'));
         console.log(chalk.cyan('Abriendo LinkedIn Jobs y extrayendo ofertas...'));
 
         const jobs = await scrapeLinkedInJobs({
-          keyword,
+          keyword: options.keyword,
           limit,
+          location: options.location,
           modality,
           remote: options.remote
         });
@@ -231,6 +236,8 @@ function renderJobsTable(jobs) {
     relevance: job.match ? '⭐' : '',
     id: String(job.id),
     modality: formatJobModality(job.modality),
+    language: formatJobLanguage(job.language),
+    location: sanitizeDisplayValue(job.location),
     title: sanitizeDisplayValue(job.title),
     company: sanitizeDisplayValue(job.company),
     link: shortenLink(job.link)
@@ -292,14 +299,57 @@ function sanitizeDisplayValue(value) {
   return String(value).replace(/\|/g, '/').replace(/\s+/g, ' ').trim();
 }
 
-function resolveFetchKeyword(optionKeyword) {
+function resolveFetchKeywordLabel(optionKeyword) {
   const normalizedKeyword = String(optionKeyword || '').trim();
 
   if (normalizedKeyword) {
     return normalizedKeyword;
   }
 
+  const configuredVariants = splitConfiguredList(process.env.LINKEDIN_KEYWORD_VARIANTS);
+
+  if (configuredVariants.length > 0) {
+    return configuredVariants.join(' | ');
+  }
+
   return process.env.LINKEDIN_KEYWORDS || 'nodejs';
+}
+
+function resolveFetchLimit(optionLimit) {
+  if (Number.isInteger(optionLimit) && optionLimit > 0) {
+    return optionLimit;
+  }
+
+  const configuredLimit = Number.parseInt(process.env.LINKEDIN_MAX_JOBS ?? '', 10);
+
+  if (!Number.isInteger(configuredLimit) || configuredLimit <= 0) {
+    return 50;
+  }
+
+  return Math.min(100, configuredLimit);
+}
+
+function resolveFetchModality(optionModality, remoteFlag) {
+  return normalizeSearchModality(optionModality ?? process.env.LINKEDIN_DEFAULT_MODALITY ?? 'both', remoteFlag);
+}
+
+function resolveFetchLocation(optionLocation) {
+  const normalizedLocation = String(optionLocation || '').trim();
+
+  if (normalizedLocation) {
+    return normalizedLocation;
+  }
+
+  const configuredLocations = [
+    ...splitConfiguredList(process.env.LINKEDIN_TARGET_LOCATIONS),
+    ...splitConfiguredList(process.env.LINKEDIN_COLOMBIA_CITIES)
+  ];
+
+  if (configuredLocations.length === 0) {
+    return 'sin filtro fijo';
+  }
+
+  return configuredLocations.join(' | ');
 }
 
 function parseLimitOption(value) {
@@ -336,4 +386,27 @@ function printRulesWarning(warning) {
   }
 
   console.log(chalk.yellow(`Aviso: ${warning}`));
+}
+
+function formatJobLanguage(language) {
+  if (language === 'spanish') {
+    return 'ES';
+  }
+
+  if (language === 'english') {
+    return 'EN';
+  }
+
+  if (language === 'mixed') {
+    return 'MIX';
+  }
+
+  return '-';
+}
+
+function splitConfiguredList(value) {
+  return String(value || '')
+    .split(';')
+    .map((item) => item.trim())
+    .filter(Boolean);
 }
