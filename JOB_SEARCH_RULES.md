@@ -88,6 +88,13 @@ english_markers:
   - developer
   - engineer
 
+red_flag_keywords:
+  - rockstar
+  - ninja
+  - fast-paced
+  - wear many hats
+  - competitive environment
+
 positive_keywords:
   - backend
   - backend developer
@@ -139,6 +146,7 @@ negative_keywords:
 ## Notas
 
 - `positive_keywords` y `negative_keywords` se usan para priorizar y descartar ofertas.
+- `red_flag_keywords` penaliza ofertas con lenguaje sospechoso o de baja calidad.
 - `search_keyword_variants` permite probar varias busquedas rapidamente.
 - `target_locations` define regiones base.
 - `colombia_cities` agrega ciudades concretas de interes.

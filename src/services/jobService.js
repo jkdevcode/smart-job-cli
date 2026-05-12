@@ -1,8 +1,9 @@
 import { all, get, run } from '../storage/db.js';
 import { loadJobSearchRules } from '../utils/jobRules.js';
+import { analyzeJob } from '../utils/jobScore.js';
 import { formatJobModality, JOB_MODALITIES } from '../utils/modality.js';
 
-export const JOB_STATUSES = Object.freeze(['new', 'applied', 'ignored']);
+export const JOB_STATUSES = Object.freeze(['new', 'reviewing', 'applied', 'ignored']);
 
 const VALID_STATUSES = new Set(JOB_STATUSES);
 const VALID_JOB_MODALITIES = new Set(JOB_MODALITIES);
@@ -24,6 +25,7 @@ export async function saveJobs(jobs) {
     return 0;
   }
 
+  const { rules } = await loadJobSearchRules();
   let inserted = 0;
 
   for (const job of jobs) {
@@ -37,14 +39,27 @@ export async function saveJobs(jobs) {
     const languageConfidence = formatJobLanguageConfidence(job.languageConfidence);
     const englishRequirement = formatJobEnglishRequirement(job.englishRequirement);
     const languageEvidence = String(job.languageEvidence || '').trim();
+    const source = String(job.source || 'linkedin').trim().toLowerCase() || 'linkedin';
+    const analysis = analyzeJob(
+      {
+        ...job,
+        modality,
+        language,
+        englishRequirement,
+        languageEvidence,
+        source
+      },
+      rules
+    );
 
     const result = await run(
       `
         INSERT OR IGNORE INTO jobs (
           title, company, link, location, modality, language,
-          languageConfidence, englishRequirement, languageEvidence
+          languageConfidence, englishRequirement, languageEvidence,
+          score, lastSeenAt, source, seniority, redFlags
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, ?, ?)
       `,
       [
         job.title,
@@ -55,7 +70,11 @@ export async function saveJobs(jobs) {
         language,
         languageConfidence,
         englishRequirement,
-        languageEvidence
+        languageEvidence,
+        analysis.score,
+        source,
+        analysis.seniority,
+        analysis.redFlagsText
       ]
     );
 
@@ -86,7 +105,12 @@ export async function saveJobs(jobs) {
               languageEvidence = CASE
                 WHEN (languageEvidence IS NULL OR languageEvidence = '') AND ? <> '' THEN ?
                 ELSE languageEvidence
-              END
+              END,
+              score = ?,
+              lastSeenAt = CURRENT_TIMESTAMP,
+              source = ?,
+              seniority = ?,
+              redFlags = ?
           WHERE link = ?
         `,
         [
@@ -102,6 +126,10 @@ export async function saveJobs(jobs) {
           englishRequirement,
           languageEvidence,
           languageEvidence,
+          analysis.score,
+          source,
+          analysis.seniority,
+          analysis.redFlagsText,
           job.link
         ]
       );
@@ -133,9 +161,10 @@ export async function getJobs({ status = 'new', modality = 'all' } = {}) {
       `
         SELECT id, title, company, link, status, createdAt
              , location, modality, language, languageConfidence, englishRequirement, languageEvidence
+             , score, lastSeenAt, source, seniority, redFlags
         FROM jobs
         WHERE status = ?
-        ORDER BY createdAt DESC, id DESC
+        ORDER BY score DESC, createdAt DESC, id DESC
       `,
       [status]
     );
@@ -145,10 +174,11 @@ export async function getJobs({ status = 'new', modality = 'all' } = {}) {
     `
       SELECT id, title, company, link, status, createdAt
            , location, modality, language, languageConfidence, englishRequirement, languageEvidence
+           , score, lastSeenAt, source, seniority, redFlags
       FROM jobs
       WHERE status = ?
         AND modality = ?
-      ORDER BY createdAt DESC, id DESC
+      ORDER BY score DESC, createdAt DESC, id DESC
     `,
     [status, normalizedModality]
   );
@@ -161,11 +191,142 @@ export async function getJobById(id) {
     `
       SELECT id, title, company, link, status, createdAt
            , location, modality, language, languageConfidence, englishRequirement, languageEvidence
+           , score, lastSeenAt, source, seniority, redFlags
       FROM jobs
       WHERE id = ?
     `,
     [id]
   );
+}
+
+export async function getJobStats() {
+  const totals = await get(
+    `
+      SELECT COUNT(*) AS total,
+             SUM(CASE WHEN status = 'new' THEN 1 ELSE 0 END) AS newCount,
+             SUM(CASE WHEN status = 'reviewing' THEN 1 ELSE 0 END) AS reviewingCount,
+             SUM(CASE WHEN status = 'applied' THEN 1 ELSE 0 END) AS appliedCount,
+             SUM(CASE WHEN status = 'ignored' THEN 1 ELSE 0 END) AS ignoredCount
+      FROM jobs
+    `
+  );
+  const topCompanies = await all(
+    `
+      SELECT company AS value, COUNT(*) AS count
+      FROM jobs
+      WHERE TRIM(COALESCE(company, '')) <> ''
+      GROUP BY company
+      ORDER BY count DESC, company ASC
+      LIMIT 5
+    `
+  );
+  const topLocations = await all(
+    `
+      SELECT location AS value, COUNT(*) AS count
+      FROM jobs
+      WHERE TRIM(COALESCE(location, '')) <> ''
+      GROUP BY location
+      ORDER BY count DESC, location ASC
+      LIMIT 5
+    `
+  );
+  const modalityCounts = await all(
+    `
+      SELECT modality AS value, COUNT(*) AS count
+      FROM jobs
+      WHERE TRIM(COALESCE(modality, '')) <> ''
+      GROUP BY modality
+      ORDER BY count DESC, modality ASC
+    `
+  );
+
+  return {
+    total: Number(totals?.total || 0),
+    statuses: {
+      new: Number(totals?.newCount || 0),
+      reviewing: Number(totals?.reviewingCount || 0),
+      applied: Number(totals?.appliedCount || 0),
+      ignored: Number(totals?.ignoredCount || 0)
+    },
+    topCompanies,
+    topLocations,
+    modalityCounts
+  };
+}
+
+export async function getJobsForExport() {
+  return all(
+    `
+      SELECT id, title, company, location, modality, language, status, score, link
+      FROM jobs
+      ORDER BY score DESC, createdAt DESC, id DESC
+    `
+  );
+}
+
+export async function cleanupJobs({ maxAgeDays = 45 } = {}) {
+  const maxAgeModifier = `-${Math.max(1, Number.parseInt(maxAgeDays, 10) || 45)} days`;
+  const staleJobs = await all(
+    `
+      SELECT id, title, company, link, COALESCE(lastSeenAt, createdAt) AS seenAt
+      FROM jobs
+      WHERE datetime(COALESCE(lastSeenAt, createdAt)) < datetime('now', ?)
+      ORDER BY datetime(COALESCE(lastSeenAt, createdAt)) ASC, id ASC
+    `,
+    [maxAgeModifier]
+  );
+  const invalidJobs = await all(
+    `
+      SELECT id, title, company, link, COALESCE(lastSeenAt, createdAt) AS seenAt
+      FROM jobs
+      WHERE TRIM(COALESCE(title, '')) = ''
+         OR TRIM(COALESCE(company, '')) = ''
+         OR TRIM(COALESCE(link, '')) = ''
+         OR link NOT LIKE 'http%'
+      ORDER BY id ASC
+    `
+  );
+  const duplicateJobs = await all(
+    `
+      SELECT jobs.id, jobs.title, jobs.company, jobs.link, COALESCE(jobs.lastSeenAt, jobs.createdAt) AS seenAt
+      FROM jobs
+      INNER JOIN (
+        SELECT link, MAX(id) AS keepId
+        FROM jobs
+        WHERE TRIM(COALESCE(link, '')) <> ''
+        GROUP BY link
+        HAVING COUNT(*) > 1
+      ) duplicates
+        ON duplicates.link = jobs.link
+      WHERE jobs.id <> duplicates.keepId
+      ORDER BY jobs.link ASC, jobs.id ASC
+    `
+  );
+
+  const idsToDelete = new Set([
+    ...staleJobs.map((job) => job.id),
+    ...invalidJobs.map((job) => job.id),
+    ...duplicateJobs.map((job) => job.id)
+  ]);
+  let deleted = 0;
+
+  for (const id of idsToDelete) {
+    const result = await run('DELETE FROM jobs WHERE id = ?', [id]);
+    deleted += result.changes;
+  }
+
+  const remainingRow = await get('SELECT COUNT(*) AS total FROM jobs');
+
+  return {
+    deleted,
+    remaining: Number(remainingRow?.total || 0),
+    preview: {
+      staleJobs,
+      invalidJobs,
+      duplicateJobs,
+      totalCandidates: idsToDelete.size
+    }
+  };
 }
 
 export async function filterJobsByRules(jobs) {
@@ -174,6 +335,42 @@ export async function filterJobsByRules(jobs) {
 
 export async function rankJobsByRules(jobs) {
   return applyRulesToJobs(jobs, { excludeNegative: false });
+}
+
+export async function refreshStoredJobInsights() {
+  const { rules } = await loadJobSearchRules();
+  const jobs = await all(
+    `
+      SELECT id, title, company, link, location, modality, language,
+             englishRequirement, languageEvidence, score, seniority, redFlags
+      FROM jobs
+    `
+  );
+
+  let updated = 0;
+
+  for (const job of jobs) {
+    const analysis = analyzeJob(job, rules);
+    const currentRedFlags = String(job.redFlags || '').trim();
+    const nextRedFlags = analysis.redFlagsText;
+
+    if (
+      Number(job.score || 0) === analysis.score &&
+      String(job.seniority || 'unknown') === analysis.seniority &&
+      currentRedFlags === nextRedFlags
+    ) {
+      continue;
+    }
+
+    const result = await run(
+      'UPDATE jobs SET score = ?, seniority = ?, redFlags = ? WHERE id = ?',
+      [analysis.score, analysis.seniority, nextRedFlags, job.id]
+    );
+
+    updated += result.changes;
+  }
+
+  return updated;
 }
 
 export async function updateJobStatus(id, status) {
@@ -189,34 +386,18 @@ async function applyRulesToJobs(jobs, { excludeNegative }) {
   const safeJobs = Array.isArray(jobs) ? jobs : [];
 
   const annotatedJobs = safeJobs.map((job, index) => {
-    const searchableText = [
-      job.title,
-      job.company,
-      job.link,
-      job.location,
-      job.modality,
-      job.language,
-      job.englishRequirement,
-      job.languageEvidence
-    ]
-      .filter(Boolean)
-      .join(' ')
-      .toLowerCase();
-
-    const matchedPositiveKeywords = rules.positiveKeywords.filter((keyword) =>
-      searchableText.includes(keyword)
-    );
-
-    const matchedNegativeKeywords = rules.negativeKeywords.filter((keyword) =>
-      searchableText.includes(keyword)
-    );
+    const analysis = analyzeJob(job, rules);
 
     return {
       ...job,
-      score: matchedPositiveKeywords.length,
-      match: matchedPositiveKeywords.length > 0,
-      matchedPositiveKeywords,
-      matchedNegativeKeywords,
+      score: analysis.score,
+      seniority: job.seniority || analysis.seniority,
+      redFlags: typeof job.redFlags === 'string' ? job.redFlags : analysis.redFlagsText,
+      match: analysis.match,
+      hasRedFlags: analysis.hasRedFlags,
+      matchedPositiveKeywords: analysis.matchedPositiveKeywords,
+      matchedNegativeKeywords: analysis.matchedNegativeKeywords,
+      matchedRedFlags: analysis.matchedRedFlags,
       __originalIndex: index
     };
   });

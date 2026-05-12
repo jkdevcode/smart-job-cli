@@ -1,35 +1,47 @@
+import fs from 'node:fs';
+import path from 'node:path';
 import { Command } from 'commander';
 import chalk from 'chalk';
+import openUrl from 'open';
 import { scrapeLinkedInJobs } from '../scraper/linkedin.js';
 import {
   JOB_STATUSES,
+  cleanupJobs,
   filterJobsByRules,
   getJobById,
+  getJobsForExport,
   getJobs,
+  getJobStats,
   rankJobsByRules,
   saveJobs,
   updateJobStatus
 } from '../services/jobService.js';
+import { updateEnvValue } from '../utils/envConfig.js';
 import {
   formatJobModality,
   JOB_MODALITIES,
   normalizeSearchModality,
   SEARCH_MODALITIES
 } from '../utils/modality.js';
+import { getDbPath } from '../storage/db.js';
 
 const TABLE_COLUMNS = [
   { key: 'relevance', label: 'Rel', width: 3 },
+  { key: 'score', label: 'Score', width: 5 },
   { key: 'id', label: 'ID', width: 4 },
+  { key: 'flag', label: 'Flag', width: 4 },
   { key: 'modality', label: 'Modo', width: 7 },
   { key: 'language', label: 'Lang', width: 5 },
-  { key: 'location', label: 'Ubicacion', width: 20 },
-  { key: 'title', label: 'Titulo', width: 32 },
-  { key: 'company', label: 'Empresa', width: 22 },
-  { key: 'link', label: 'Link', width: 40 }
+  { key: 'location', label: 'Ubicacion', width: 18 },
+  { key: 'title', label: 'Titulo', width: 30 },
+  { key: 'company', label: 'Empresa', width: 20 },
+  { key: 'link', label: 'Link', width: 36 }
 ];
 
 const VALID_STATUS_LABEL = JOB_STATUSES.join('|');
 const VALID_LIST_MODALITY_LABEL = ['all', ...JOB_MODALITIES].join('|');
+const EXPORT_FORMATS = Object.freeze(['csv', 'json']);
+const CLEANUP_PREVIEW_LIMIT = 3;
 
 export function createProgram() {
   const program = new Command();
@@ -161,11 +173,158 @@ export function createProgram() {
     });
 
   program
+    .command('review')
+    .description('Marca una oferta como reviewing.')
+    .argument('<id>', 'ID de la oferta')
+    .action(async (idValue) => {
+      await handleStatusChange(idValue, 'reviewing');
+    });
+
+  program
     .command('ignore')
     .description('Marca una oferta como ignorada.')
     .argument('<id>', 'ID de la oferta')
     .action(async (idValue) => {
       await handleStatusChange(idValue, 'ignored');
+    });
+
+  program
+    .command('open')
+    .description('Abre en el navegador la oferta indicada por ID.')
+    .argument('<id>', 'ID de la oferta')
+    .action(async (idValue) => {
+      try {
+        const id = parseId(idValue);
+        const job = await getJobById(id);
+
+        if (!job) {
+          console.error(chalk.red(`No existe ninguna oferta con ID ${id}.`));
+          process.exitCode = 1;
+          return;
+        }
+
+        if (!job.link) {
+          console.error(chalk.red(`La oferta ${id} no tiene un link valido para abrir.`));
+          process.exitCode = 1;
+          return;
+        }
+
+        await openUrl(job.link);
+        console.log(chalk.green(`Oferta ${id} abierta en el navegador.`));
+        console.log(chalk.cyan(`${job.title} | ${job.company}`));
+      } catch (error) {
+        console.error(chalk.red('No fue posible abrir la oferta.'));
+        console.error(chalk.red(error.message));
+        process.exitCode = 1;
+      }
+    });
+
+  program
+    .command('stats')
+    .description('Muestra estadisticas resumidas de las ofertas guardadas.')
+    .action(async () => {
+      try {
+        const stats = await getJobStats();
+
+        printSection('STATS');
+        renderKeyValueRows([
+          ['Total ofertas', stats.total],
+          ['Nuevas', stats.statuses.new],
+          ['Reviewing', stats.statuses.reviewing],
+          ['Aplicadas', stats.statuses.applied],
+          ['Ignoradas', stats.statuses.ignored]
+        ]);
+        console.log('');
+        renderCountRows('Modalidades', stats.modalityCounts);
+        console.log('');
+        renderCountRows('Top empresas', stats.topCompanies);
+        console.log('');
+        renderCountRows('Top locations', stats.topLocations);
+      } catch (error) {
+        console.error(chalk.red('No fue posible generar las estadisticas.'));
+        console.error(chalk.red(error.message));
+        process.exitCode = 1;
+      }
+    });
+
+  program
+    .command('export')
+    .description('Exporta las ofertas guardadas a CSV o JSON.')
+    .option('--format <format>', `Formato de salida: ${EXPORT_FORMATS.join('|')}`, parseExportFormatOption, 'csv')
+    .action(async (options) => {
+      try {
+        const jobs = await getJobsForExport();
+        const filePath = writeExportFile(jobs, options.format);
+        console.log(chalk.green(`Export completado: ${filePath}`));
+        console.log(chalk.cyan(`Ofertas exportadas: ${jobs.length}`));
+      } catch (error) {
+        console.error(chalk.red('No fue posible exportar las ofertas.'));
+        console.error(chalk.red(error.message));
+        process.exitCode = 1;
+      }
+    });
+
+  const configCommand = program
+    .command('config')
+    .description('Muestra o actualiza la configuracion principal del CLI.');
+
+  configCommand.action(() => {
+    printSection('CONFIG');
+    renderKeyValueRows([
+      ['Keyword default', resolveFetchKeywordLabel('')],
+      ['Max jobs', resolveFetchLimit()],
+      ['Modality default', resolveFetchModality()],
+      ['DB path', getDbPath()]
+    ]);
+  });
+
+  configCommand
+    .command('set')
+    .description('Actualiza una clave de configuracion en .env.')
+    .argument('<key>', 'Clave logica: keyword|max-jobs|modality|db-path')
+    .argument('<value>', 'Nuevo valor')
+    .action((key, value) => {
+      try {
+        const configEntry = resolveConfigEntry(key, value);
+        const result = updateEnvValue(configEntry.envKey, configEntry.value);
+        process.env[configEntry.envKey] = configEntry.value;
+
+        console.log(chalk.green(`Configuracion actualizada: ${configEntry.envKey}`));
+        console.log(chalk.cyan(`Valor: ${configEntry.value}`));
+        console.log(chalk.cyan(`Archivo: ${result.envPath}`));
+
+        if (result.backupPath) {
+          console.log(chalk.cyan(`Backup: ${result.backupPath}`));
+        }
+      } catch (error) {
+        console.error(chalk.red('No fue posible actualizar la configuracion.'));
+        console.error(chalk.red(error.message));
+        process.exitCode = 1;
+      }
+    });
+
+  program
+    .command('cleanup')
+    .description('Elimina ofertas antiguas, invalidas y duplicados extremos.')
+    .option('--days <number>', 'Antiguedad maxima en dias para conservar ofertas', parseDaysOption, 45)
+    .action(async (options) => {
+      try {
+        const result = await cleanupJobs({ maxAgeDays: options.days });
+
+        printSection('CLEANUP');
+        console.log(chalk.cyan(`Umbral de antiguedad: ${options.days} dias`));
+        renderCleanupPreview('Antiguas', result.preview.staleJobs);
+        renderCleanupPreview('Invalidas', result.preview.invalidJobs);
+        renderCleanupPreview('Duplicadas', result.preview.duplicateJobs);
+        console.log('');
+        console.log(chalk.green(`Candidatas detectadas: ${result.preview.totalCandidates}`));
+        console.log(chalk.green(`Eliminadas: ${result.deleted}`));
+        console.log(chalk.green(`Restantes: ${result.remaining}`));
+      } catch (error) {
+        console.error(chalk.red('No fue posible ejecutar cleanup.'));
+        console.error(chalk.red(error.message));
+        process.exitCode = 1;
+      }
     });
 
   return program;
@@ -182,7 +341,7 @@ async function handleStatusChange(idValue, status) {
     }
 
     if (job.status === status) {
-      const currentStatusLabel = status === 'applied' ? 'aplicada' : 'ignorada';
+      const currentStatusLabel = getStatusPastParticiple(status);
       console.log(chalk.yellow(`La oferta ${id} ya estaba marcada como ${currentStatusLabel}.`));
       return;
     }
@@ -194,7 +353,7 @@ async function handleStatusChange(idValue, status) {
       return;
     }
 
-    const statusLabel = status === 'applied' ? 'aplicada' : 'ignorada';
+    const statusLabel = getStatusPastParticiple(status);
     console.log(chalk.green(`Oferta ${id} marcada como ${statusLabel}.`));
     console.log(chalk.cyan(`${job.title} | ${job.company}`));
   } catch (error) {
@@ -234,7 +393,9 @@ function printSection(title) {
 function renderJobsTable(jobs) {
   const rows = jobs.map((job) => ({
     relevance: job.match ? '⭐' : '',
+    score: formatJobScore(job.score),
     id: String(job.id),
+    flag: job.hasRedFlags || String(job.redFlags || '').trim() ? '⚠' : '',
     modality: formatJobModality(job.modality),
     language: formatJobLanguage(job.language),
     location: sanitizeDisplayValue(job.location),
@@ -259,6 +420,53 @@ function renderJobsTable(jobs) {
   }
 
   console.log(chalk.blue(separator));
+}
+
+function renderKeyValueRows(rows) {
+  const labelWidth = rows.reduce((maxWidth, [label]) => Math.max(maxWidth, label.length), 0);
+
+  for (const [label, value] of rows) {
+    console.log(`${chalk.bold(label.padEnd(labelWidth, ' '))} : ${value}`);
+  }
+}
+
+function renderCountRows(title, rows) {
+  console.log(chalk.bold(title));
+
+  if (!Array.isArray(rows) || rows.length === 0) {
+    console.log(chalk.yellow('Sin datos.'));
+    return;
+  }
+
+  const valueWidth = rows.reduce(
+    (maxWidth, row) => Math.max(maxWidth, sanitizeDisplayValue(row.value).length),
+    0
+  );
+
+  for (const row of rows) {
+    const value = sanitizeDisplayValue(row.value);
+    console.log(`${value.padEnd(valueWidth, ' ')} : ${row.count}`);
+  }
+}
+
+function renderCleanupPreview(title, rows) {
+  console.log('');
+  console.log(chalk.bold(`${title}: ${rows.length}`));
+
+  if (!Array.isArray(rows) || rows.length === 0) {
+    console.log(chalk.yellow('Sin coincidencias.'));
+    return;
+  }
+
+  for (const row of rows.slice(0, CLEANUP_PREVIEW_LIMIT)) {
+    const titleText = sanitizeDisplayValue(row.title);
+    const companyText = sanitizeDisplayValue(row.company);
+    console.log(`${row.id} | ${titleText} | ${companyText}`);
+  }
+
+  if (rows.length > CLEANUP_PREVIEW_LIMIT) {
+    console.log(chalk.yellow(`... y ${rows.length - CLEANUP_PREVIEW_LIMIT} mas.`));
+  }
 }
 
 function formatCell(value, width) {
@@ -380,6 +588,26 @@ function parseListModalityOption(value) {
   return normalizedValue;
 }
 
+function parseExportFormatOption(value) {
+  const normalizedValue = String(value || '').trim().toLowerCase();
+
+  if (!EXPORT_FORMATS.includes(normalizedValue)) {
+    throw new Error(`Formato invalido. Usa uno de: ${EXPORT_FORMATS.join('|')}.`);
+  }
+
+  return normalizedValue;
+}
+
+function parseDaysOption(value) {
+  const parsedValue = Number.parseInt(String(value || '').trim(), 10);
+
+  if (!Number.isInteger(parsedValue) || parsedValue <= 0) {
+    throw new Error('Los dias deben ser un entero positivo.');
+  }
+
+  return parsedValue;
+}
+
 function printRulesWarning(warning) {
   if (!warning) {
     return;
@@ -404,9 +632,122 @@ function formatJobLanguage(language) {
   return '-';
 }
 
+function formatJobScore(score) {
+  const numericScore = Number(score);
+
+  if (!Number.isFinite(numericScore) || numericScore < 0) {
+    return '0';
+  }
+
+  return String(Math.round(numericScore));
+}
+
+function getStatusPastParticiple(status) {
+  if (status === 'applied') {
+    return 'aplicada';
+  }
+
+  if (status === 'ignored') {
+    return 'ignorada';
+  }
+
+  if (status === 'reviewing') {
+    return 'en revision';
+  }
+
+  return status;
+}
+
 function splitConfiguredList(value) {
   return String(value || '')
     .split(';')
     .map((item) => item.trim())
     .filter(Boolean);
+}
+
+function resolveConfigEntry(key, value) {
+  const normalizedKey = String(key || '').trim().toLowerCase();
+  const normalizedValue = String(value || '').trim();
+
+  if (!normalizedValue) {
+    throw new Error('El valor no puede estar vacio.');
+  }
+
+  if (normalizedKey === 'keyword') {
+    return { envKey: 'LINKEDIN_KEYWORDS', value: normalizedValue };
+  }
+
+  if (normalizedKey === 'max-jobs') {
+    const parsedValue = parseLimitOption(normalizedValue);
+    return { envKey: 'LINKEDIN_MAX_JOBS', value: String(parsedValue) };
+  }
+
+  if (normalizedKey === 'modality') {
+    return {
+      envKey: 'LINKEDIN_DEFAULT_MODALITY',
+      value: normalizeSearchModality(normalizedValue, false)
+    };
+  }
+
+  if (normalizedKey === 'db-path') {
+    return { envKey: 'JOB_DB_PATH', value: normalizedValue };
+  }
+
+  throw new Error('Clave invalida. Usa una de: keyword|max-jobs|modality|db-path.');
+}
+
+function writeExportFile(jobs, format) {
+  const exportDir = path.resolve(process.cwd(), 'exports');
+  const timestamp = createTimestampLabel(new Date());
+  const filePath = path.join(exportDir, `jobs-${timestamp}.${format}`);
+
+  fs.mkdirSync(exportDir, { recursive: true });
+
+  if (format === 'json') {
+    fs.writeFileSync(filePath, `${JSON.stringify(jobs, null, 2)}\n`, 'utf8');
+    return filePath;
+  }
+
+  const headers = ['id', 'title', 'company', 'location', 'modality', 'language', 'status', 'score', 'link'];
+  const lines = [headers.join(',')];
+
+  for (const job of jobs) {
+    lines.push(
+      headers
+        .map((header) => escapeCsvValue(job[header]))
+        .join(',')
+    );
+  }
+
+  fs.writeFileSync(filePath, `${lines.join('\n')}\n`, 'utf8');
+  return filePath;
+}
+
+function createTimestampLabel(date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  const hours = String(date.getHours()).padStart(2, '0');
+  const minutes = String(date.getMinutes()).padStart(2, '0');
+  const seconds = String(date.getSeconds()).padStart(2, '0');
+
+  return `${year}-${month}-${day}-${hours}-${minutes}-${seconds}`;
+}
+
+function escapeCsvValue(value) {
+  const stringValue = sanitizeExportValue(value);
+
+  if (/[",\n]/.test(stringValue)) {
+    return `"${stringValue.replace(/"/g, '""')}"`;
+  }
+
+  return stringValue;
+}
+
+function sanitizeExportValue(value) {
+  if (value == null) {
+    return '';
+  }
+
+  return String(value).replace(/\r?\n/g, ' ').trim();
 }

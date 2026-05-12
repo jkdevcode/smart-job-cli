@@ -3,11 +3,13 @@
 import 'dotenv/config';
 import chalk from 'chalk';
 import { createProgram } from './src/cli/commands.js';
+import { refreshStoredJobInsights } from './src/services/jobService.js';
 import { initDB } from './src/storage/db.js';
 
 async function main() {
   try {
     await initDB();
+    await refreshStoredJobInsights();
 
     const program = createProgram();
     await program.parseAsync(process.argv);

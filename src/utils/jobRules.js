@@ -39,6 +39,7 @@ export function parseJobSearchRules(content) {
   return {
     positiveKeywords: extractKeywordList(content, 'positive_keywords'),
     negativeKeywords: extractKeywordList(content, 'negative_keywords'),
+    redFlagKeywords: extractKeywordList(content, 'red_flag_keywords'),
     searchKeywordVariants: extractKeywordList(content, 'search_keyword_variants'),
     targetLocations: extractKeywordList(content, 'target_locations'),
     colombiaCities: extractKeywordList(content, 'colombia_cities'),
@@ -89,6 +90,7 @@ function createEmptyRules() {
   return {
     positiveKeywords: [],
     negativeKeywords: [],
+    redFlagKeywords: [],
     searchKeywordVariants: [],
     targetLocations: [],
     colombiaCities: [],

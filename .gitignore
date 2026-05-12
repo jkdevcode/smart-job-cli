@@ -1,10 +1,25 @@
-# Ignore node modules and database files
+# Dependencies
 node_modules/
-data/jobs.db
 
-# Environment variables file
+# Local database files
+data/jobs.db
+data/*.db
+data/*.sqlite
+data/*.sqlite3
+
+# Local environment files
 .env
+.env.bak
 
 # Playwright test artifacts
 playwright-report/
 test-results/
+
+# Generated exports
+exports/
+
+# Common local artifacts
+*.log
+*.tmp
+*.bak
+

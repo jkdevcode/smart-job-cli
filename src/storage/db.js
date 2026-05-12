@@ -48,6 +48,11 @@ export async function initDB() {
       languageConfidence REAL DEFAULT 0,
       englishRequirement TEXT DEFAULT 'unknown',
       languageEvidence TEXT,
+      score INTEGER DEFAULT 0,
+      lastSeenAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+      source TEXT DEFAULT 'linkedin',
+      seniority TEXT DEFAULT 'unknown',
+      redFlags TEXT DEFAULT '',
       status TEXT DEFAULT 'new',
       createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
     )
@@ -79,7 +84,42 @@ export async function initDB() {
     await run('ALTER TABLE jobs ADD COLUMN languageEvidence TEXT');
   }
 
+  if (!columns.some((column) => column.name === 'score')) {
+    await run('ALTER TABLE jobs ADD COLUMN score INTEGER DEFAULT 0');
+  }
+
+  if (!columns.some((column) => column.name === 'lastSeenAt')) {
+    await run('ALTER TABLE jobs ADD COLUMN lastSeenAt DATETIME');
+  }
+
+  if (!columns.some((column) => column.name === 'source')) {
+    await run("ALTER TABLE jobs ADD COLUMN source TEXT DEFAULT 'linkedin'");
+  }
+
+  if (!columns.some((column) => column.name === 'seniority')) {
+    await run("ALTER TABLE jobs ADD COLUMN seniority TEXT DEFAULT 'unknown'");
+  }
+
+  if (!columns.some((column) => column.name === 'redFlags')) {
+    await run("ALTER TABLE jobs ADD COLUMN redFlags TEXT DEFAULT ''");
+  }
+
+  await run(
+    `
+      UPDATE jobs
+      SET score = COALESCE(score, 0),
+          lastSeenAt = COALESCE(lastSeenAt, createdAt, CURRENT_TIMESTAMP),
+          source = COALESCE(NULLIF(source, ''), 'linkedin'),
+          seniority = COALESCE(NULLIF(seniority, ''), 'unknown'),
+          redFlags = COALESCE(redFlags, '')
+    `
+  );
+
   return dbInstance;
+}
+
+export function getDbPath() {
+  return resolveDbPath();
 }
 
 export function getDB() {

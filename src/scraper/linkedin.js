@@ -384,15 +384,11 @@ async function scrapeJobsForModality(browser, { keyword, limit, location, modali
 
     await page.waitForTimeout(4000);
 
-    await page.waitForFunction(
-      () =>
-        Boolean(
-          document.querySelector('.jobs-search__results-list li') ||
-            document.querySelector('.jobs-search-results__list-item') ||
-            document.querySelector('.base-card')
-        ),
-      { timeout: 20000 }
-    );
+    const listingsState = await waitForListingsState(page);
+
+    if (listingsState !== 'results') {
+      return [];
+    }
 
     await autoScroll(page, limit);
 
@@ -484,6 +480,8 @@ async function scrapeJobsForModality(browser, { keyword, limit, location, modali
         languageConfidence: languageAnalysis.languageConfidence,
         englishRequirement: languageAnalysis.englishRequirement,
         languageEvidence: languageAnalysis.languageEvidence,
+        rawText: cleanupText(job.rawText),
+        source: 'linkedin',
         __languagePriority: getLanguagePriority(languageAnalysis, languagePolicy)
       });
     }
@@ -836,4 +834,43 @@ async function autoScroll(page, maxJobs) {
   }, maxJobs);
 
   await page.waitForTimeout(1500);
+}
+
+async function waitForListingsState(page) {
+  try {
+    return await page.waitForFunction(
+      () => {
+        const resultSelectors = [
+          '.jobs-search__results-list li',
+          '.jobs-search-results__list-item',
+          '.base-card'
+        ];
+        const emptyStateSelectors = [
+          '.jobs-search-no-results-banner',
+          '.jobs-search-no-results',
+          '[data-test-id="no-results"]'
+        ];
+        const bodyText = document.body?.innerText?.toLowerCase() || '';
+
+        if (resultSelectors.some((selector) => document.querySelector(selector))) {
+          return 'results';
+        }
+
+        if (
+          emptyStateSelectors.some((selector) => document.querySelector(selector)) ||
+          bodyText.includes('no matching jobs found') ||
+          bodyText.includes('no results found') ||
+          bodyText.includes('sin resultados')
+        ) {
+          return 'empty';
+        }
+
+        return null;
+      },
+      undefined,
+      { timeout: 20000 }
+    );
+  } catch {
+    return 'unknown';
+  }
 }
