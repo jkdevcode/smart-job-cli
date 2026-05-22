@@ -4,6 +4,7 @@ import { Command } from 'commander';
 import chalk from 'chalk';
 import openUrl from 'open';
 import { scrapeLinkedInJobs } from '../scraper/linkedin.js';
+import { writeExcelFile } from '../utils/excelExport.js';
 import {
   JOB_STATUSES,
   cleanupJobs,
@@ -40,7 +41,7 @@ const TABLE_COLUMNS = [
 
 const VALID_STATUS_LABEL = JOB_STATUSES.join('|');
 const VALID_LIST_MODALITY_LABEL = ['all', ...JOB_MODALITIES].join('|');
-const EXPORT_FORMATS = Object.freeze(['csv', 'json']);
+const EXPORT_FORMATS = Object.freeze(['csv', 'json', 'xlsx']);
 const CLEANUP_PREVIEW_LIMIT = 3;
 
 export function createProgram() {
@@ -249,12 +250,12 @@ export function createProgram() {
 
   program
     .command('export')
-    .description('Exporta las ofertas guardadas a CSV o JSON.')
-    .option('--format <format>', `Formato de salida: ${EXPORT_FORMATS.join('|')}`, parseExportFormatOption, 'csv')
+    .description('Exporta las ofertas guardadas a CSV, JSON o XLSX.')
+    .option('--format <format>', `Formato de salida: ${EXPORT_FORMATS.join('|')}`, parseExportFormatOption, 'xlsx')
     .action(async (options) => {
       try {
         const jobs = await getJobsForExport();
-        const filePath = writeExportFile(jobs, options.format);
+        const filePath = await writeExportFile(jobs, options.format);
         console.log(chalk.green(`Export completado: ${filePath}`));
         console.log(chalk.cyan(`Ofertas exportadas: ${jobs.length}`));
       } catch (error) {
@@ -696,7 +697,7 @@ function resolveConfigEntry(key, value) {
   throw new Error('Clave invalida. Usa una de: keyword|max-jobs|modality|db-path.');
 }
 
-function writeExportFile(jobs, format) {
+async function writeExportFile(jobs, format) {
   const exportDir = path.resolve(process.cwd(), 'exports');
   const timestamp = createTimestampLabel(new Date());
   const filePath = path.join(exportDir, `jobs-${timestamp}.${format}`);
@@ -705,6 +706,11 @@ function writeExportFile(jobs, format) {
 
   if (format === 'json') {
     fs.writeFileSync(filePath, `${JSON.stringify(jobs, null, 2)}\n`, 'utf8');
+    return filePath;
+  }
+
+  if (format === 'xlsx') {
+    await writeExcelFile(jobs, filePath);
     return filePath;
   }
 
@@ -719,7 +725,8 @@ function writeExportFile(jobs, format) {
     );
   }
 
-  fs.writeFileSync(filePath, `${lines.join('\n')}\n`, 'utf8');
+  // Se añade \ufeff al inicio (UTF-8 BOM) para que Excel reconozca los acentos y la eñe correctamente en el CSV.
+  fs.writeFileSync(filePath, `\ufeff${lines.join('\n')}\n`, 'utf8');
   return filePath;
 }
 

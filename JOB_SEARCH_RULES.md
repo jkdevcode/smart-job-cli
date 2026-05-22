@@ -101,7 +101,6 @@ positive_keywords:
   - nodejs
   - node.js
   - nestjs
-  - nest.js
   - express
   - typescript
   - javascript
